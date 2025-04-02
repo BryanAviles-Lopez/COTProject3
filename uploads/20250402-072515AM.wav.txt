@@ -1,0 +1,3 @@
+Text: I lost a friend.
+
+Sentiment Analysis: negative

@@ -1,0 +1,3 @@
+Text: Hello, hello, testing, testing.
+
+Sentiment Analysis: neutral

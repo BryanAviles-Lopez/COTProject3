@@ -1,9 +1,9 @@
 from datetime import datetime
 from flask import Flask, render_template, request, redirect, url_for, send_from_directory, flash
-from google.cloud import speech
-from google.cloud import texttospeech
-from google.cloud import language_v1
 import os
+import base64
+from google import genai
+from google.genai import types
 
 app = Flask(__name__)
 
@@ -13,6 +13,48 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs('tts', exist_ok=True)
+
+def generate(filename, prompt):
+    client = genai.Client(
+        api_key=os.environ.get("GEMINI_API_KEY"),
+    )
+
+    files = [
+        # Make the file available in local system working directory
+        client.files.upload(file=filename)
+    ]
+    model = "gemini-2.0-flash"
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_uri(
+                    file_uri=files[0].uri,
+                    mime_type=files[0].mime_type,
+                ),
+                types.Part.from_text(text=prompt),
+            ],
+        ),
+    ]
+    generate_content_config = types.GenerateContentConfig(
+        temperature=1,
+        top_p=0.95,
+        top_k=40,
+        max_output_tokens=8192,
+        response_mime_type="text/plain",
+    )
+
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=generate_content_config,
+    )
+
+    print(response)
+    return response.text
+
+
+###
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -31,20 +73,6 @@ def index():
     tts_files = get_files('tts')  
     return render_template('index.html', files=files, tts_files=tts_files)
 
-def analyze_sentiment(text):
-    client = language_v1.LanguageServiceClient()
-    document = language_v1.Document(content=text, type_=language_v1.Document.Type.PLAIN_TEXT)
-    sentiment = client.analyze_sentiment(document=document).document_sentiment
-
-    if sentiment.score > 0.2:
-        sentiment_label = "Positive"
-    elif sentiment.score < -0.2:
-        sentiment_label = "Negative"
-    else:
-        sentiment_label = "Neutral"
-
-    return f"Sentiment: {sentiment_label}\nScore: {sentiment.score}\nMagnitude: {sentiment.magnitude}"
-
 @app.route('/upload', methods=['POST'])
 def upload_audio():
     if 'audio_data' not in request.files:
@@ -61,52 +89,19 @@ def upload_audio():
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(file_path)
 
-        client = speech.SpeechClient()
-        with open(file_path, 'rb') as audio_file:
-            content = audio_file.read()
+        prompt = """
+        Please provide an exact trascript for the audio, followed by sentiment analysis.
 
-        audio = speech.RecognitionAudio(content=content)
-        config = speech.RecognitionConfig(
-            language_code="en-US",
-            audio_channel_count=1,
-        )
+        Your response should follow the format:
 
-        response = client.recognize(config=config, audio=audio)
+        Text: USERS SPEECH TRANSCRIPTION
 
-        transcript = "\n".join([result.alternatives[0].transcript for result in response.results])
-        sentiment_result = analyze_sentiment(transcript)
-        transcript_path = file_path + '.txt'
-        with open(transcript_path, 'w') as f:
-            f.write(f"Original Audio File: {filename}\n\nTranscript:\n{transcript}\n\n{sentiment_result}")
-
-    return redirect('/')
-
-
-@app.route('/upload_text', methods=['POST'])
-def upload_text():
-    text = request.form['text']
-    if not text.strip():
-        flash("Text input is empty")
-        return redirect(request.url)
-
-    client = texttospeech.TextToSpeechClient()
-    input_text = texttospeech.SynthesisInput(text=text)
-    voice = texttospeech.VoiceSelectionParams(language_code="en-US", ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL)
-    audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.LINEAR16)
-
-    response = client.synthesize_speech(input=input_text, voice=voice, audio_config=audio_config)
-
-    tts_folder = 'tts'
-    filename = datetime.now().strftime("%Y%m%d-%I%M%S%p") + '.wav'
-    file_path = os.path.join(tts_folder, filename)
-    with open(file_path, 'wb') as out:
-        out.write(response.audio_content)
-
-    sentiment_result = analyze_sentiment(text)
-
-    transcript_path = file_path + '.txt'
-    with open(transcript_path, 'w') as f:
-        f.write(f"Original TTS Input:\n{text}\n\n{sentiment_result}")
+        Sentiment Analysis: positive|neutral|negative
+        """
+        text = generate(file_path, prompt)
+        f = open(file_path+'.txt','w')
+        f.write(text)
+        f.close()
 
     return redirect('/')
 
